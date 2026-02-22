@@ -1,0 +1,324 @@
+from servos import *
+from camera import *
+from pid_control import PID
+import sensor, time, math
+
+class Robot(object):
+    """
+    A class to manage the functions of a robot for driving and tracking purposes using a camera and servos.
+    """
+
+    def __init__(self, thresholds, gain=20, p=1, i=0.05, d=0.9, imax=0.01):
+        """
+        Initializes the Robot object with given PID parameters.
+
+        Args:
+            thresholds (list): Colour detection thresholds
+            gain (float): Camera gain
+            p (float): Proportional gain for the PID.
+            i (float): Integral gain for the PID.
+            d (float): Derivative gain for the PID.
+            imax (float): Maximum Integral error for the PID.
+        """
+        self.servo = Servo()
+        self.servo.soft_reset()
+        self.cam = Cam(thresholds, gain)
+        self.PID = PID(p, i, d, imax)
+
+        # Blob IDs
+        self.mid_line_id = 0
+        self.obstacle_id = 1
+        self.l_line_id = 2
+        self.r_line_id = 3
+
+        self.scan_direction = 1
+
+
+    def stage1(self, speed: float, bias: float) -> None:
+        """
+        Line following algorithm
+
+        Args:
+            speed (float): Speed to set the servos to (-1~1)
+            bias (float): Just an example of other arguments you can add to the function!
+        """
+
+        blobs, img = self.cam.get_blobs()
+        found_mid = self.cam.find_blob(blobs, self.mid_line_id)
+        found_l = self.cam.find_blob(blobs, self.l_line_id)
+        found_r = self.cam.find_blob(blobs, self.r_line_id)
+        print("found_mid = ", found_mid)
+
+        while True:
+            if found_mid is not None: # as found_mid = 0, before it wasn't entering the if statement because 0 = False.
+                """
+                ###Level 1### Please insert code here to compute the center line angular error as derived from the pixel error, then use this value
+                to come up with a steering command to send to self.drive(speed, steering) function. Remember the steering takes values between -1 and 1.
+                """
+                print("found")
+                self.update_drive(blobs[found_mid], speed)
+                blobs, img = self.cam.get_blobs()
+                found_mid = self.cam.find_blob(blobs, self.mid_line_id)
+
+
+                #the 1 is the scaler, used the same as in target tracking
+                '''###Level 2### Please insert code here to follow the lane when the red line is obstructed.
+                How would you make sure the pixyBot still stays on the road?
+                Come up with a steering command to send to self.drive(speed, steering) function
+                '''
+
+            else:
+                if found_l:
+                    self.drive(speed, -0.0005)
+                    print("turning right")
+                elif found_r:
+                    self.drive(speed, 0.0005)
+                    print("turning left")
+                blobs, img = self.cam.get_blobs()
+                found_mid = self.cam.find_blob(blobs, self.mid_line_id)
+                found_l = self.cam.find_blob(blobs, self.l_line_id)
+                found_r = self.cam.find_blob(blobs, self.r_line_id)
+                # # print("not found")
+                # self.drive(0, 0)
+                # blobs, img = self.cam.get_blobs()
+                # found_mid = self.cam.find_blob(blobs, self.mid_line_id)
+                # print(found_mid)
+
+        self.servo.soft_reset()
+        return
+
+    def update_drive(self, centreBlob, speed):
+        error = centreBlob.cx() - self.cam.w_centre
+        print(error)
+        self.drive(speed, self.PID.get_pid(error, 1))
+
+
+
+
+    def stage2(self, speed: float, bias: float) -> None:
+        """
+        Obstacle detection algorithm - write your own method!
+
+        Args:
+            speed (float): Speed to set the servos to (-1~1)
+            bias (float): Just an example of other arguments you can add to the function!
+        """
+        found_l = self.cam.find_blob(blobs, self.l_line_id)
+        found_r = self.cam.find_blob(blobs, self.r_line_id)
+        while True:
+                # Get the detected blobs
+                blobs, img = self.cam.get_blobs()
+                found_mid = self.cam.find_blob(blobs, self.mid_line_id)
+                found_obstacle = self.cam.find_blob(blobs, self.obstacle_id)
+
+                if found_obstacle is not None:
+                    print("Obstacle detected! Stopping.")
+                    self.drive(0, 0)  # Stop the robot
+                    time.sleep(0.5)   # Pause before checking again
+                else:
+                    self.stage1(0.05,0)
+
+                time.sleep(0.1)  # Small delay to prevent excessive loop execution
+
+        self.servo.soft_reset()
+        return
+
+
+    def stage3(self, speed: float, bias: float, obstacle_distance: float) -> None:
+        """
+        Obstacle distance algorithm - write your own method!
+
+        Args:
+            speed (float): Speed to set the servos to (-1~1)
+            bias (float): Just an example of other arguments you can add to the function!
+        """
+        mid_line_depth = 29  # in mm
+        hidden_distance = 80  # in mm
+        frame_bottom_center = (self.cam.w_centre, 480)
+
+        while True:
+            blobs, img = self.cam.get_blobs()
+
+            found_mid = [blob for blob in blobs if blob[8] == self.mid_line_id + 1]
+            found_obstacle = [blob for blob in blobs if blob[8] == self.obstacle_id + 1]
+
+            if len(found_mid) != 0 and len(found_obstacle) != 0:
+                largest_mid_line_blob = max(found_mid, key=lambda b: b.pixels())
+                img.draw_rectangle(largest_mid_line_blob.rect(), color=(255, 0, 0))
+                mid_line_pixel_depth = largest_mid_line_blob.h()
+
+                scale_factor = mid_line_depth / mid_line_pixel_depth
+
+                largest_obstacle_blob = max(found_obstacle, key=lambda b: b.pixels())
+                img.draw_rectangle(largest_obstacle_blob.rect(), color=(0, 255, 0))
+                bottom_center_x = largest_obstacle_blob.x() + (largest_obstacle_blob.w() // 2)
+                bottom_center_y = largest_obstacle_blob.y() + largest_obstacle_blob.h()
+
+                pixel_distance = math.sqrt((bottom_center_y - frame_bottom_center[1]) ** 2 +
+                                      (bottom_center_x - frame_bottom_center[0]) ** 2)
+
+                frame_distance = pixel_distance * scale_factor
+                print(f"Real-world distance: {frame_distance} mm")
+
+                frame_angle = abs(math.atan((bottom_center_x - self.cam.w_centre) /
+                              (480 - largest_obstacle_blob.h())))
+                print(f"Angle: {frame_angle * (180 / math.pi)} degrees")
+
+                real_distance = math.sqrt(frame_distance ** 2 + hidden_distance ** 2 -
+                                          2 * frame_distance * hidden_distance * math.cos(math.pi - frame_angle))
+                print(f"Real distance: {real_distance} mm")
+
+                if real_distance < obstacle_distance * 10:
+                    self.drive(0, 0)
+                    print("Obstacle detected! Stopping.")
+                    break
+                else:
+                    self.drive(speed, bias)
+
+            else:
+                self.drive(speed, bias)
+
+        self.servo.soft_reset()
+        return
+
+
+    def stage4(self, speed: float, bias: float) -> None:
+        """
+        Obstacle distance + orientation algorithm - write your own method!
+
+        Args:
+            speed (float): Speed to set the servos to (-1~1)
+            bias (float): Just an example of other arguments you can add to the function!
+        """
+        self.servo.soft_reset()
+        return
+
+
+    def stage5(self, speed: float, bias: float) -> None:
+        """
+        Obstacle avoidance algorithm - write your own method!
+
+        Args:
+            speed (float): Speed to set the servos to (-1~1)
+            bias (float): Just an example of other arguments you can add to the function!
+        """
+        self.servo.soft_reset()
+        return
+
+
+    def drive(self, drive: float, steering: float) -> None:
+        """
+        Differential drive function for the robot.
+
+        Args:
+            drive (float): Speed to set the servos to (-1~1)
+            steering (float): Sets the steering to (-1~1)
+        """
+        # Apply limits
+        self.servo.set_differential_drive(drive, steering)
+
+
+    def track_blob(self, blob) -> None:
+        """
+        Adjust the camera pan angle to track a specified blob based on its ID.
+
+        Args:
+            blob: The blob object to be tracked
+        """
+        # Error between camera angle and target in pixels
+        pixel_error = blob.cx() - self.cam.w_centre
+
+        # Convert error to angle
+        angle_error = -(pixel_error/sensor.width()*self.cam.h_fov)
+
+        pid_error = self.PID.get_pid(angle_error,1)
+
+        # Error between camera angle and target in ([deg])
+        pan_angle = self.servo.pan_pos + pid_error
+
+        # Move pan servo to track block
+        self.servo.set_angle(pan_angle)
+
+
+    def scan_for_blob(self, threshold_idx: int, step = 2, limit = 20) -> None:
+        """
+        Scans left and right with the camera to find the line.
+
+        Args:
+            threshold_idx (int): Index along self.cam.thresholds to find matching blobs
+            step (int): Number of degrees to pan the servo at each scan step
+            limit (int): Scan oscillates between +-limit degrees
+        """
+        while True:
+            # Update pan angle based on the scan direction and speed
+            new_pan_angle = self.servo.pan_pos + (self.scan_direction * step)
+
+            # Set new angle
+            self.servo.set_angle(new_pan_angle)
+
+            # Check blobs to see if the line is found
+            blobs, _ = self.cam.get_blobs_bottom()
+            found_idx = self.cam.find_blob(blobs, threshold_idx)
+            if found_idx:
+                break
+
+            # Check if limits are reached and reverse direction
+            if self.servo.pan_pos >= limit or self.servo.pan_pos <= -limit:
+                self.scan_direction *= -1
+
+
+    def debug(self, threshold_idx: int) -> None:
+        """
+        A debug function for the Robots vision.
+        If no block ID is specified, all blocks are detected and debugged.
+
+        Args:
+            threshold_idx (int): Index along self.cam.thresholds to find matching blobs
+        """
+        while True:
+            blobs, img = self.cam.get_blobs()
+            if threshold_idx is not None:
+                found_idx = self.cam.find_blob(blobs, threshold_idx)
+            else:
+                found_idx = range(len(blobs))
+
+            if found_idx:
+                for blob in [blobs[i] for i in found_idx]:
+                    img.draw_rectangle(blob.rect())
+                    img.draw_string(blob.cx(),blob.cy(),str(blob.code()))
+
+                    angle_err = blob.cx() - self.cam.w_centre
+
+                    print('\n' * 2)
+                    print('Code:       ', blob.code())
+                    print('X-pos:      ',blob.cx())
+                    print('Pan angle:  ', self.servo.pan_pos)
+                    print('Angle err:  ', angle_err)
+                    print('Angle corr: ', (angle_err-self.servo.pan_pos)/self.servo.max_deg)
+                    print('Block size: ', blob.pixels())
+
+                    time.sleep(1)
+
+
+    def reset(self) -> None:
+        """
+        Resets the servo positions to their default states and waits.
+        """
+        self.servo.soft_reset()
+
+
+    def release(self) -> None:
+        """
+        Release all servos (no wait).
+        """
+        self.servo.release_all()
+
+
+if __name__ == "__main__":
+    Thresholds =    [(45, 82, 7, 50, -5, 33),  # Mid Line
+                    (15, 42, -32, 3, -13, 13),  # Test Obstacle
+                    (39, 51, -2, 3, -30, -13),
+                    (37, 46, 6, 16, -30, -17),
+                    ]
+    dude = Robot(Thresholds)
+    dude.stage3(0.03,0, 10)
